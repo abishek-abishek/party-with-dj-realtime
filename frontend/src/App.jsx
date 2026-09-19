@@ -113,12 +113,23 @@ export default function App(){
   async function buzz(){
     if(!participant||!event?.buzzer_active) return;
     setBusy(true);
-    try{await sendBuzz(participant.id)}catch(e){console.log(e.message)}
-    finally{setBusy(false)}
+    try{
+      await sendBuzz(participant.id);
+      await syncState(true);
+    }catch(e){
+      console.log(e.message);
+    }finally{
+      setBusy(false);
+    }
   }
 
   async function action(fn){
-    try{await fn(coordinatorPassword)}catch(e){alert(e.message)}
+    try{
+      await fn(coordinatorPassword);
+      await syncState(true);
+    }catch(e){
+      alert(e.message);
+    }
   }
 
   const leaderboard=useMemo(()=>buzzes.map(b=>({...b,participant:teams.find(t=>t.id===b.participant_id)})),[buzzes,teams]);
