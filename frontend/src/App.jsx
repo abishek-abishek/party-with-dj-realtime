@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Activity, Crown, LogIn, Music2, Radio, RefreshCw, Trash2, Trophy, Users, Zap } from "lucide-react";
 import { getEventState, joinParticipant, sendBuzz, coordinatorLogin, startEvent, pauseEvent, endEvent, startBuzzer, lockBuzzer, resetBuzzer, reopenBuzzer, deleteParticipant } from "./lib/api";
 import { supabase } from "./lib/realtime";
@@ -21,31 +21,78 @@ export default function App(){
 
   const eventId=event?.id;
 
+  const syncingRef=useRef(false);
+
+  async function syncState(silent=false){
+    if(syncingRef.current) return;
+    syncingRef.current=true;
+    try{
+      const x=await getEventState();
+      setEvent(x.event);
+      setTeams(x.participants||[]);
+      setBuzzes((x.buzzes||[]).sort((a,b)=>a.position-b.position));
+    }catch(e){
+      if(!silent) alert(e.message);
+    }finally{
+      syncingRef.current=false;
+    }
+  }
+
   async function load(){
     try{
       setLoading(true);
-      const x=await getEventState();
-      setEvent(x.event); setTeams(x.participants||[]); setBuzzes(x.buzzes||[]);
-    }catch(e){ alert(e.message); } finally { setLoading(false); }
+      await syncState();
+    }finally{
+      setLoading(false);
+    }
   }
+
   useEffect(()=>{load()},[]);
 
   useEffect(()=>{
     if(!eventId) return;
+
+    let alive=true;
+
     const channel=supabase.channel(`party-with-dj-${eventId}`)
-      .on("postgres_changes",{event:"*",schema:"public",table:"events",filter:`id=eq.${eventId}`},p=>{if(p.new?.id)setEvent(p.new)})
+      .on("postgres_changes",{event:"*",schema:"public",table:"events",filter:`id=eq.${eventId}`},p=>{
+        if(p.new?.id) setEvent(p.new);
+      })
       .on("postgres_changes",{event:"*",schema:"public",table:"participants",filter:`event_id=eq.${eventId}`},p=>{
-        if(p.eventType==="INSERT") setTeams(a=>a.some(x=>x.id===p.new.id)?a:[...a,p.new]);
-        if(p.eventType==="UPDATE") setTeams(a=>a.map(x=>x.id===p.new.id?p.new:x));
-        if(p.eventType==="DELETE") setTeams(a=>a.filter(x=>x.id!==p.old.id));
+        if(p.eventType==="INSERT"){
+          setTeams(a=>a.some(x=>x.id===p.new.id)?a:[...a,p.new]);
+        }
+        if(p.eventType==="UPDATE"){
+          setTeams(a=>a.map(x=>x.id===p.new.id?p.new:x));
+        }
+        if(p.eventType==="DELETE"){
+          setTeams(a=>a.filter(x=>x.id!==p.old.id));
+        }
       })
       .on("postgres_changes",{event:"*",schema:"public",table:"buzzes",filter:`event_id=eq.${eventId}`},p=>{
-        if(p.eventType==="INSERT") setBuzzes(a=>[...a.filter(x=>x.id!==p.new.id),p.new].sort((x,y)=>x.position-y.position));
-        if(p.eventType==="UPDATE") setBuzzes(a=>a.map(x=>x.id===p.new.id?p.new:x).sort((x,y)=>x.position-y.position));
-        if(p.eventType==="DELETE") setBuzzes(a=>a.filter(x=>x.id!==p.old.id));
+        if(p.eventType==="INSERT"){
+          setBuzzes(a=>[...a.filter(x=>x.id!==p.new.id),p.new].sort((x,y)=>x.position-y.position));
+        }
+        if(p.eventType==="UPDATE"){
+          setBuzzes(a=>a.map(x=>x.id===p.new.id?p.new:x).sort((x,y)=>x.position-y.position));
+        }
+        if(p.eventType==="DELETE"){
+          setBuzzes(a=>a.filter(x=>x.id!==p.old.id));
+        }
       })
       .subscribe();
-    return ()=>{supabase.removeChannel(channel)};
+
+    // Realtime is the fast path. Polling is a safety net so the event
+    // still updates automatically if a browser/network blocks WebSockets.
+    const pollId=setInterval(()=>{
+      if(alive) syncState(true);
+    },1000);
+
+    return ()=>{
+      alive=false;
+      clearInterval(pollId);
+      supabase.removeChannel(channel);
+    };
   },[eventId]);
 
   async function login(){
